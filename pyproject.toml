@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "testgate"
+version = "0.1.0"
+description = "Deterministic test-quality gates: prove a test can fail before you trust it."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Pete Baxter" }]
+keywords = ["testing", "test-quality", "ci", "gate", "tdd"]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+testgate = "testgate.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["testgate*"]
+
+[tool.setuptools.package-data]
+testgate = ["fixtures/**/*"]
+
+# testgate's own configuration, used when running testgate on testgate.
+[tool.testgate]
+runner = "pytest"
+test_globs = ["tests/**/test_*.py"]

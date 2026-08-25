@@ -12,7 +12,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import __version__, config, redgate, selftest
+from . import __version__, config, mutate, redgate, selftest
 
 
 def _print_selftest(cases) -> None:
@@ -23,26 +23,39 @@ def _print_selftest(cases) -> None:
 
 
 def cmd_selftest(args) -> int:
-    passed, cases = selftest.run()
+    if args.red_only:
+        passed, cases = selftest.run()
+    elif args.mutation_only:
+        passed, cases = selftest.run_mutation()
+    else:
+        passed, cases = selftest.run_all()
     print("testgate selftest (positive control)")
     _print_selftest(cases)
     if passed:
-        print(f"selftest OK: {len(cases)} case(s), the gate provably bites.")
+        print(f"selftest OK: {len(cases)} case(s), the gates provably bite.")
         return 0
     print("selftest FAILED. testgate cannot be trusted in this environment, "
           "so no result it produces is evidence.")
     return 2
 
 
+def _guard_selftest(runner, skip: bool) -> int | None:
+    """A clean result only means something if the gate proved it can fail."""
+    if skip:
+        return None
+    passed, cases = runner()
+    if passed:
+        return None
+    print("refusing to run: selftest failed, so a clean result would "
+          "be meaningless.")
+    _print_selftest(cases)
+    return 2
+
+
 def cmd_red(args) -> int:
-    # A clean result is only meaningful if the gate proved it can fail.
-    if not args.skip_selftest:
-        passed, cases = selftest.run()
-        if not passed:
-            print("refusing to run: selftest failed, so a clean result would "
-                  "be meaningless.")
-            _print_selftest(cases)
-            return 2
+    guard = _guard_selftest(selftest.run, args.skip_selftest)
+    if guard is not None:
+        return guard
 
     try:
         cfg = config.load(Path(args.path))
@@ -84,6 +97,58 @@ def cmd_red(args) -> int:
     return result.exit_code
 
 
+def cmd_mutate(args) -> int:
+    guard = _guard_selftest(selftest.run_mutation, args.skip_selftest)
+    if guard is not None:
+        return guard
+
+    try:
+        cfg = config.load(Path(args.path))
+    except config.ConfigError as exc:
+        print(f"config error: {exc}")
+        return 2
+    if args.max_mutants:
+        cfg.max_mutants = args.max_mutants
+    if args.threshold is not None:
+        cfg.mutation_threshold = args.threshold
+
+    result = mutate.run(cfg)
+
+    if args.json:
+        print(json.dumps({
+            "exit_code": result.exit_code,
+            "summary": result.summary,
+            "scanned_sources": len(result.scanned_sources),
+            "generated": result.generated,
+            "killed": result.killed,
+            "survived": [
+                {"id": r.mutant.id, "operator": r.mutant.operator,
+                 "path": r.mutant.path, "line": r.mutant.line_no,
+                 "before": r.mutant.before.strip(),
+                 "after": r.mutant.after.strip()}
+                for r in result.survived
+            ],
+            "score": round(result.score, 4),
+            "threshold": cfg.mutation_threshold,
+            "detail": result.detail,
+        }, indent=2))
+        return result.exit_code
+
+    print(f"testgate mutation gate  (runner: {cfg.preset.name})")
+    print(f"  source files : {len(result.scanned_sources)}")
+    print(f"  generated    : {result.generated}")
+    if result.survived:
+        print(f"  SURVIVED     : {len(result.survived)}")
+        for res in result.survived:
+            print(f"      {res.mutant.id}")
+            print(f"        - {res.mutant.before.strip()}")
+            print(f"        + {res.mutant.after.strip()}")
+    print(f"  verdict      : {result.summary}")
+    if result.detail:
+        print(f"  {result.detail}")
+    return result.exit_code
+
+
 def cmd_doctor(args) -> int:
     try:
         cfg = config.load(Path(args.path))
@@ -117,8 +182,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--version", action="version", version=__version__)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_self = sub.add_parser("selftest", help="prove the gate can fail")
+    p_self = sub.add_parser("selftest", help="prove the gates can fail")
+    p_self.add_argument("--red-only", action="store_true")
+    p_self.add_argument("--mutation-only", action="store_true")
     p_self.set_defaults(func=cmd_selftest)
+
+    p_mut = sub.add_parser("mutate", help="mutation gate")
+    p_mut.add_argument("path", nargs="?", default=".")
+    p_mut.add_argument("--max-mutants", type=int)
+    p_mut.add_argument("--threshold", type=float)
+    p_mut.add_argument("--json", action="store_true")
+    p_mut.add_argument("--skip-selftest", action="store_true",
+                       help="not recommended: results are no longer evidence")
+    p_mut.set_defaults(func=cmd_mutate)
 
     p_red = sub.add_parser("red", help="red-evidence gate")
     p_red.add_argument("path", nargs="?", default=".")

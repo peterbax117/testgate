@@ -16,6 +16,44 @@ from pathlib import Path
 
 PATHS = "{paths}"
 REPORT = "{report}"
+FILE = "{file}"
+
+
+@dataclass(frozen=True)
+class Operator:
+    """A declarative mutation: break one behaviour, deterministically.
+
+    Applied one match at a time, to one line at a time. `pattern` is a regex
+    and `replacement` is a re.sub template.
+    """
+    name: str
+    pattern: str
+    replacement: str
+
+
+# Operators that remove a BEHAVIOUR rather than just editing a line. Order is
+# fixed, because mutant ordering must be deterministic across runs.
+COMMON_OPERATORS: list[Operator] = [
+    Operator("true_to_false", r"\bTrue\b", "False"),
+    Operator("false_to_true", r"\bFalse\b", "True"),
+    Operator("eq_to_ne", r"==", "!="),
+    Operator("ne_to_eq", r"!=", "=="),
+    Operator("and_to_or", r"\band\b", "or"),
+    Operator("or_to_and", r"\bor\b", "and"),
+    Operator("gt_to_ge", r"(?<![<>=!])>(?![=>])", ">="),
+    Operator("lt_to_le", r"(?<![<>=!])<(?![=<])", "<="),
+    Operator("drop_not", r"\bnot\s+", ""),
+]
+
+PY_OPERATORS: list[Operator] = COMMON_OPERATORS + [
+    Operator("raise_to_pass", r"^(\s*)raise\b.*$", r"\1pass"),
+    Operator("guard_always_false", r"^(\s*)if\b(.*):\s*$", r"\1if False:"),
+]
+
+JS_OPERATORS: list[Operator] = COMMON_OPERATORS + [
+    Operator("throw_to_noop", r"^(\s*)throw\b.*$", r"\1;"),
+    Operator("strict_eq_to_loose", r"===", "=="),
+]
 
 
 @dataclass(frozen=True)
@@ -26,6 +64,10 @@ class Preset:
     # Must expose a capture group named "name" for the test identifier.
     test_decl_pattern: str
     pin_marker: str | None = None
+    src_globs: list[str] = field(default_factory=list)
+    operators: list[Operator] = field(default_factory=list)
+    # argv template with {file}; used to reject syntactically broken mutants.
+    syntax_check: list[str] | None = None
 
 
 PRESETS: dict[str, Preset] = {
@@ -41,6 +83,13 @@ PRESETS: dict[str, Preset] = {
         test_globs=["tests/**/test_*.py", "tests/**/*_test.py"],
         test_decl_pattern=r"^\s*(?:async\s+)?def\s+(?P<name>test\w*)\s*\(",
         pin_marker="pytest.mark.pin",
+        src_globs=["**/*.py"],
+        operators=PY_OPERATORS,
+        syntax_check=[
+            "python", "-c",
+            "import sys,py_compile;py_compile.compile(sys.argv[1],doraise=True)",
+            FILE,
+        ],
     ),
     "vitest": Preset(
         name="vitest",
@@ -49,6 +98,8 @@ PRESETS: dict[str, Preset] = {
         test_globs=["**/*.test.ts", "**/*.test.js", "**/*.spec.ts"],
         test_decl_pattern=r"""^\s*(?:it|test)\s*\(\s*['"`](?P<name>[^'"`]+)""",
         pin_marker="PIN:",
+        src_globs=["src/**/*.ts", "src/**/*.js"],
+        operators=JS_OPERATORS,
     ),
     "pester": Preset(
         name="pester",
@@ -56,6 +107,8 @@ PRESETS: dict[str, Preset] = {
         test_globs=["**/*.Tests.ps1"],
         test_decl_pattern=r"""^\s*It\s+['"](?P<name>[^'"]+)""",
         pin_marker="-Tag 'Pin'",
+        src_globs=["**/*.ps1"],
+        operators=COMMON_OPERATORS,
     ),
 }
 
@@ -67,10 +120,18 @@ class Config:
     test_globs: list[str] = field(default_factory=list)
     pin_marker: str | None = None
     base_ref: str = "origin/main"
+    src_globs: list[str] = field(default_factory=list)
+    max_mutants: int = 25
+    mutation_threshold: float = 0.75
+    timeout: int = 300
 
     @property
     def globs(self) -> list[str]:
         return self.test_globs or self.preset.test_globs
+
+    @property
+    def source_globs(self) -> list[str]:
+        return self.src_globs or self.preset.src_globs
 
 
 class ConfigError(RuntimeError):
@@ -106,6 +167,13 @@ def load(root: Path) -> Config:
                 test_globs=list(table.get("test_globs", [])),
                 test_decl_pattern=table["test_decl_pattern"],
                 pin_marker=table.get("pin_marker"),
+                src_globs=list(table.get("src_globs", [])),
+                operators=[
+                    Operator(o["name"], o["pattern"], o["replacement"])
+                    for o in table.get("operators", [])
+                ] or COMMON_OPERATORS,
+                syntax_check=list(table["syntax_check"])
+                if table.get("syntax_check") else None,
             )
         except KeyError as exc:
             raise ConfigError(
@@ -121,7 +189,17 @@ def load(root: Path) -> Config:
         test_globs=list(table.get("test_globs", [])),
         pin_marker=table.get("pin_marker", preset.pin_marker),
         base_ref=table.get("base_ref", "origin/main"),
+        src_globs=list(table.get("src_globs", [])),
+        max_mutants=int(table.get("max_mutants", 25)),
+        mutation_threshold=float(table.get("mutation_threshold", 0.75)),
+        timeout=int(table.get("timeout", 300)),
     )
+
+
+def build_check_argv(preset: Preset, file: Path) -> list[str] | None:
+    if not preset.syntax_check:
+        return None
+    return [part.replace(FILE, str(file)) for part in preset.syntax_check]
 
 
 def build_argv(preset: Preset, paths: list[str], report: Path) -> list[str]:

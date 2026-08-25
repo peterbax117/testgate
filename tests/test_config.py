@@ -82,3 +82,59 @@ def test_defaults_to_pytest_when_no_config(tmp_path):
     cfg = config.load(tmp_path)
     assert cfg.preset.name == "pytest"
     assert cfg.base_ref == "origin/main"
+
+
+def test_source_globs_fall_back_to_the_preset(tmp_path):
+    """Found by running the mutation gate against testgate itself."""
+    cfg = config.load(tmp_path)
+    assert cfg.src_globs == []
+    assert cfg.source_globs == config.PRESETS["pytest"].src_globs
+
+
+def test_source_globs_override_the_preset(tmp_path):
+    (tmp_path / "testgate.toml").write_text(
+        '[testgate]\nrunner = "pytest"\nsrc_globs = ["lib/**/*.py"]\n',
+        encoding="utf-8",
+    )
+    cfg = config.load(tmp_path)
+    assert cfg.source_globs == ["lib/**/*.py"]
+
+
+def test_test_globs_fall_back_to_the_preset(tmp_path):
+    cfg = config.load(tmp_path)
+    assert cfg.globs == config.PRESETS["pytest"].test_globs
+
+
+def test_mutation_defaults_are_explicit(tmp_path):
+    cfg = config.load(tmp_path)
+    assert cfg.max_mutants == 25
+    assert cfg.mutation_threshold == 0.75
+    assert cfg.timeout == 300
+
+
+@pytest.mark.parametrize("op_name,sample,expected", [
+    ("true_to_false", "x = True", "x = False"),
+    ("false_to_true", "x = False", "x = True"),
+    ("eq_to_ne", "a == b", "a != b"),
+    ("ne_to_eq", "a != b", "a == b"),
+    ("and_to_or", "a and b", "a or b"),
+    ("or_to_and", "a or b", "a and b"),
+    ("gt_to_ge", "a > b", "a >= b"),
+    ("lt_to_le", "a < b", "a <= b"),
+    ("drop_not", "if not flag", "if flag"),
+])
+def test_each_operator_rewrites_as_declared(op_name, sample, expected):
+    """Found by the mutation gate: nothing asserted the replacements."""
+    op = next(o for o in config.PY_OPERATORS if o.name == op_name)
+    assert re.sub(op.pattern, op.replacement, sample, count=1) == expected
+
+
+def test_no_operator_is_a_no_op():
+    """An operator that changes nothing would inflate the kill rate."""
+    samples = ["x = True", "x = False", "a == b", "a != b", "a and b",
+               "a or b", "a > b", "a < b", "if not flag", "raise ValueError()",
+               "if cond:"]
+    for op in config.PY_OPERATORS:
+        changed = [s for s in samples
+                   if re.sub(op.pattern, op.replacement, s, count=1) != s]
+        assert changed, f"operator {op.name} never changes anything"

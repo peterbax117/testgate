@@ -12,7 +12,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import __version__, config, mutate, redgate, selftest
+from . import __version__, config, gitops, mutate, redgate, selftest
 
 
 def _print_selftest(cases) -> None:
@@ -52,6 +52,15 @@ def _guard_selftest(runner, skip: bool) -> int | None:
     return 2
 
 
+def _git_error_detail(exc: gitops.GitError, root: Path) -> str:
+    if "not a git repository" in str(exc).lower():
+        return (
+            f"not a git repository: {root}. "
+            "Run testgate from a git working tree."
+        )
+    return str(exc)
+
+
 def cmd_red(args) -> int:
     guard = _guard_selftest(selftest.run, args.skip_selftest)
     if guard is not None:
@@ -65,7 +74,14 @@ def cmd_red(args) -> int:
     if args.base:
         cfg.base_ref = args.base
 
-    result = redgate.run(cfg)
+    try:
+        result = redgate.run(cfg)
+    except gitops.GitError as exc:
+        result = redgate.Result(
+            exit_code=redgate.UNUSABLE,
+            summary="git operation failed",
+            detail=_git_error_detail(exc, cfg.root),
+        )
 
     if args.json:
         print(json.dumps({
@@ -112,7 +128,14 @@ def cmd_mutate(args) -> int:
     if args.threshold is not None:
         cfg.mutation_threshold = args.threshold
 
-    result = mutate.run(cfg)
+    try:
+        result = mutate.run(cfg)
+    except gitops.GitError as exc:
+        result = mutate.Result(
+            exit_code=mutate.UNUSABLE,
+            summary="git operation failed",
+            detail=_git_error_detail(exc, cfg.root),
+        )
 
     if args.json:
         print(json.dumps({
@@ -155,8 +178,11 @@ def cmd_doctor(args) -> int:
     except config.ConfigError as exc:
         print(f"config error: {exc}")
         return 2
-    from . import gitops
-    files = gitops.discover_test_files(cfg.root, cfg.globs)
+    try:
+        files = gitops.discover_test_files(cfg.root, cfg.globs)
+    except gitops.GitError as exc:
+        print(_git_error_detail(exc, cfg.root))
+        return 2
     print(f"root       : {cfg.root}")
     print(f"runner     : {cfg.preset.name}")
     print(f"globs      : {cfg.globs}")

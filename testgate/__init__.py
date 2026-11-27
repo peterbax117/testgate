@@ -5,4 +5,4 @@ claim. Nothing here reports a clean result unless it can also demonstrate, in
 the same run, that it is capable of reporting a dirty one.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"

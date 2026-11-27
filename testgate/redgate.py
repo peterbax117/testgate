@@ -74,7 +74,15 @@ def run(cfg: Config) -> Result:
             ),
         )
 
-    base = gitops.merge_base(root, cfg.base_ref)
+    try:
+        base = gitops.merge_base(root, cfg.base_ref)
+    except gitops.GitError as exc:
+        return Result(
+            exit_code=UNUSABLE,
+            summary="cannot resolve base ref",
+            scanned_files=all_tests,
+            detail=str(exc),
+        )
     changed = gitops.changed_test_files(root, base, globs)
 
     added: dict[str, list[str]] = {}

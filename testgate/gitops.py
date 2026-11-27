@@ -62,9 +62,13 @@ def merge_base(root: Path, base_ref: str) -> str:
     try:
         return git(root, "merge-base", base_ref, "HEAD").strip()
     except GitError as exc:
+        fetch_hint = ""
+        if "/" in base_ref:
+            remote, branch = base_ref.split("/", 1)
+            fetch_hint = f"Run `git fetch {remote} {branch}`, or "
         raise GitError(
-            f"cannot resolve a merge-base between {base_ref!r} and HEAD. "
-            f"Set base_ref in your testgate config to a ref that exists. ({exc})"
+            f"cannot resolve base ref {base_ref!r}. "
+            f"{fetch_hint}pass `--base <ref>` for a ref that exists. ({exc})"
         ) from exc
 
 

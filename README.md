@@ -29,7 +29,7 @@ Exit codes are the contract:
 |---|---|
 | `0` | Gate passed |
 | `1` | An added test passed on the base source, and is named |
-| `2` | The gate could not run, or could not prove itself. **Never a pass.** |
+| `2` | The gate could not run (for example, its base ref cannot be resolved), or could not prove itself. **Never a pass.** |
 
 The only escape hatch is a declared pin (`@pytest.mark.pin` for pytest). A
 characterisation test is legitimate, but the author has to say so in code where

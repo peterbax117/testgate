@@ -60,15 +60,22 @@ def matches_any(path: str, patterns: list[str]) -> bool:
 
 def merge_base(root: Path, base_ref: str) -> str:
     try:
-        return git(root, "merge-base", base_ref, "HEAD").strip()
+        git(root, "rev-parse", "--verify", "--quiet", base_ref)
     except GitError as exc:
         fetch_hint = ""
-        if "/" in base_ref:
-            remote, branch = base_ref.split("/", 1)
+        remote, separator, branch = base_ref.partition("/")
+        if separator and remote in git(root, "remote").splitlines():
             fetch_hint = f"Run `git fetch {remote} {branch}`, or "
         raise GitError(
             f"cannot resolve base ref {base_ref!r}. "
-            f"{fetch_hint}pass `--base <ref>` for a ref that exists. ({exc})"
+            f"{fetch_hint}pass `--base <ref>` for a ref that exists."
+        ) from exc
+    try:
+        return git(root, "merge-base", base_ref, "HEAD").strip()
+    except GitError as exc:
+        raise GitError(
+            f"base ref {base_ref!r} has no common ancestor with HEAD. "
+            "Choose a ref from this repository's history with `--base <ref>`."
         ) from exc
 
 
